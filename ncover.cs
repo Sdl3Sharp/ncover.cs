@@ -496,7 +496,7 @@ rootCommand.SetAction(async (result, cancellationToken) =>
             }
 
             var managedAssemblyName = managedPe.Assembly.GetName();            
-            var (nativePeName, nativePeVersion) = await nativePe.GetProductInfoAsync(cancellationToken);
+            var nativeInformation = await nativePe.GetInformationAsync(cancellationToken);
 
             var report = new ReportData(
                 ManagedLibrary: new ReportData.PeData(
@@ -526,8 +526,8 @@ rootCommand.SetAction(async (result, cancellationToken) =>
                 ),
                 NativeLibrary: new ReportData.PeData(
                     FileName: nativePe.File.Name,
-                    Name: nativePeName,
-                    Version: nativePeVersion,
+                    Name: nativeInformation.ProductName ?? nativeInformation.FileDescription,
+                    Version: nativeInformation.ProductVersion ?? nativeInformation.FixedProductVersion?.ToString() ?? nativeInformation.FileVersion ?? nativeInformation.FixedFileVersion?.ToString(),
                     SourcePackage: nuGetPackages is not null
                         ? new ReportData.PeData.PackageData(
                             Id: nuGetPackages.RidPackage.Id,
@@ -1106,6 +1106,12 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
 
 	public sealed class Native: PeFile, IPeFile<Native, NativeArgs>
 	{
+        public readonly record struct Information(
+            Version? FixedFileVersion, Version? FixedProductVersion,
+            string?  FileDescription,  string?  FileVersion,
+            string?  ProductName,      string?  ProductVersion
+        );
+
         private readonly record struct SectionHeader(uint VirtualSize, uint VirtualAddress, uint SizeOfRawData, uint PointerToRawData);
 
 		private NativeArgs mArgs;
@@ -1186,7 +1192,7 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
             }
 		}
 
-        public async ValueTask<(string? ProductName, string? ProductVersion)> GetProductInfoAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<Information> GetInformationAsync(CancellationToken cancellationToken = default)
         {
             const uint rtVersion = 16;
             const int namedCountOffset = 12,
@@ -1195,7 +1201,7 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
             
             ObjectDisposedException.ThrowIf(mArgs.Stream is null, this);
 
-            if (mArgs.ResourceDirectoryEntryRva is 0 || mArgs.ResourceDirectoryEntrySize is 0) { return (null, null); }
+            if (mArgs.ResourceDirectoryEntryRva is 0 || mArgs.ResourceDirectoryEntrySize is 0) { return default; }
 
             // Map resource directory RVA -> file offset
             if (!TryRvaToFileOffset(mArgs.ResourceDirectoryEntryRva, out var resourceDirectoryFileOffset)) { throw new InvalidDataException("Resource directory RVA could not be mapped to a file offset."); }
@@ -1221,7 +1227,7 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
                     break;
                 }
 
-                if (i >= idCount) { return (null, null); }
+                if (i >= idCount) { return default; }
             }
 
             // Map level 2 RVA -> file offset
@@ -1232,7 +1238,7 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
             var level2NamedCount = await mArgs.Stream.ReadLittleEndianAsync<ushort>(cancellationToken);
             var level2IdCount = await mArgs.Stream.ReadLittleEndianAsync<ushort>(cancellationToken);
 
-            if (level2NamedCount + level2IdCount is 0) { return (null, null); }
+            if (level2NamedCount + level2IdCount is 0) { return default; }
 
             mArgs.Stream.Seek(level2FileOffset + resourceDirectoryHeaderSize + sizeof(uint), SeekOrigin.Begin); // "+ sizeof(uint)" to skip over the name/id, we don't care about that
             var level3RelativeOffset = await mArgs.Stream.ReadLittleEndianAsync<uint>(cancellationToken);
@@ -1247,7 +1253,7 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
             var level3NamedCount = await mArgs.Stream.ReadLittleEndianAsync<ushort>(cancellationToken);
             var level3IdCount = await mArgs.Stream.ReadLittleEndianAsync<ushort>(cancellationToken);
 
-            if (level3NamedCount + level3IdCount is 0) { return (null, null); }
+            if (level3NamedCount + level3IdCount is 0) { return default; }
 
             mArgs.Stream.Seek(level3FileOffset + resourceDirectoryHeaderSize + sizeof(uint), SeekOrigin.Begin); // "+ sizeof(uint)" to skip over the language id, we don't care about that
             var dataEntryRelativeOffset = await mArgs.Stream.ReadLittleEndianAsync<uint>(cancellationToken);
@@ -1260,7 +1266,7 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
             mArgs.Stream.Seek(dataEntryFileOffset, SeekOrigin.Begin);
             var dataRva = await mArgs.Stream.ReadLittleEndianAsync<uint>(cancellationToken);
             var dataSize = await mArgs.Stream.ReadLittleEndianAsync<int>(cancellationToken);
-            if (dataRva is 0 || dataSize is 0) { return (null, null); }
+            if (dataRva is 0 || dataSize is 0) { return default; }
 
             // Map data RVA -> file offset
             if (!TryRvaToFileOffset(dataRva, out var dataFileOffset)) { throw new InvalidDataException("Data RVA for RT_VERSION could not be mapped to a file offset."); }
@@ -1277,22 +1283,53 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
             static int alignUp(int value, int alignment) => unchecked((value + (alignment - 1)) & ~(alignment - 1));
 
             var wValueLength = versionDataSpan[2..].ReadLittleEndian<ushort>(out _);
-            var offset = alignUp(alignUp(6 + "VS_VERSION_INFO\0".Length * 2, 4) + wValueLength, 4); // header (6 bytes) + "VS_VERSION_INFO\0" (32 bytes, UTF-16), aligned up to 4 bytes (should be 40 bytes in total)
+            var fixedFileInfoOffset = alignUp(6 + "VS_VERSION_INFO\0".Length * 2, 4); // header (6 bytes) + "VS_VERSION_INFO\0" (32 bytes, UTF-16), aligned up to 4 bytes (should be 40 bytes in total)
 
-            string? productName = null, productVersion = null;
-            while (offset + 6 <= versionDataSpan.Length)
+            Version? fixedFileVersion = null, fixedProductVersion = null;
+            if (wValueLength is >= 52 && fixedFileInfoOffset + 52 <= versionDataSpan.Length)
             {
-                var blockLength = versionDataSpan[offset..].ReadLittleEndian<ushort>(out _);
-                if (blockLength is 0 || offset + blockLength > versionDataSpan.Length) { break; }
+                var fixedFileInfoSpan = versionDataSpan[fixedFileInfoOffset..];
 
-                var blockKey = versionDataSpan[(offset + 6)..].ReadNullTerminatedUtf16LittleEndian(out _);
+                var signature = fixedFileInfoSpan.ReadLittleEndian<uint>(out fixedFileInfoSpan);
+                if (signature is not 0xFEEF04BDu) { throw new InvalidDataException("Invalid signature in VS_FIXEDFILEINFO. Expected 0xFEEF04BD."); }
+
+                _ = fixedFileInfoSpan.ReadLittleEndian<uint>(out fixedFileInfoSpan); // struct version, we don't care about this
+
+                var fileVersionMS = fixedFileInfoSpan.ReadLittleEndian<uint>(out fixedFileInfoSpan);
+                var fileVersionLS = fixedFileInfoSpan.ReadLittleEndian<uint>(out fixedFileInfoSpan);
+                var productVersionMS = fixedFileInfoSpan.ReadLittleEndian<uint>(out fixedFileInfoSpan);
+                var productVersionLS = fixedFileInfoSpan.ReadLittleEndian<uint>(out fixedFileInfoSpan);
+
+                fixedFileVersion = new Version(
+                    major:    unchecked((int)(fileVersionMS >> 16)),
+                    minor:    unchecked((int)(fileVersionMS & 0xFFFFu)),
+                    build:    unchecked((int)(fileVersionLS >> 16)),
+                    revision: unchecked((int)(fileVersionLS & 0xFFFFu))
+                );
+                fixedProductVersion = new Version(
+                    major:    unchecked((int)(productVersionMS >> 16)),
+                    minor:    unchecked((int)(productVersionMS & 0xFFFFu)),
+                    build:    unchecked((int)(productVersionLS >> 16)),
+                    revision: unchecked((int)(productVersionLS & 0xFFFFu))
+                );
+            }
+
+            var blockOffset = alignUp(fixedFileInfoOffset + wValueLength, 4);
+
+            string? fileDescription = null, fileVersion = null, productName = null, productVersion = null;
+            while (blockOffset + 6 <= versionDataSpan.Length)
+            {
+                var blockLength = versionDataSpan[blockOffset..].ReadLittleEndian<ushort>(out _);
+                if (blockLength is 0 || blockOffset + blockLength > versionDataSpan.Length) { break; }
+
+                var blockKey = versionDataSpan[(blockOffset + 6)..].ReadNullTerminatedUtf16LittleEndian(out _);
                 var blockKeyEnd = alignUp(6 + (blockKey.Length + 1) * 2, 4); // header (6 bytes) + block key (UTF-16), aligned up to 4 bytes
 
                 if (blockKey is "StringFileInfo")
                 {
-                    var stringFileEnd = offset + blockLength;
+                    var stringFileEnd = blockOffset + blockLength;
 
-                    var stringTableOffset = offset + blockKeyEnd;
+                    var stringTableOffset = blockOffset + blockKeyEnd;
                     while (stringTableOffset + 6 <= stringFileEnd)
                     {
                         var stringTableLength = versionDataSpan[stringTableOffset..].ReadLittleEndian<ushort>(out _);
@@ -1317,12 +1354,14 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
                                 var stringValue = versionDataSpan[stringValueOffset..stringValueEnd].ReadNullTerminatedUtf16LittleEndian(out _);
                                 switch (stringKey)
                                 {
-                                    case "ProductName": productName = stringValue; break;
-                                    case "ProductVersion": productVersion = stringValue; break;
+                                    case "FileDescription": fileDescription = stringValue; break;
+                                    case "FileVersion":     fileVersion     = stringValue; break;
+                                    case "ProductName":     productName     = stringValue; break;
+                                    case "ProductVersion":  productVersion  = stringValue; break;
                                 }
+
+                                if (fileDescription is not null && fileVersion is not null && productName is not null && productVersion is not null) { goto End; }
                             }
-                            
-                            if (productName is not null && productVersion is not null) { goto End; }
 
                             stringOffset += alignUp(stringLength, 4);                            
                         }
@@ -1331,11 +1370,11 @@ file abstract class PeFile : IAsyncDisposable, IDisposable
                     }
                 }
 
-                offset += alignUp(blockLength, 4);
+                blockOffset += alignUp(blockLength, 4);
             }
 
         End:
-            return (productName, productVersion);
+            return new Information(fixedFileVersion, fixedProductVersion, fileDescription, fileVersion, productName, productVersion);
         }
 
         private bool TryRvaToFileOffset(uint rva, out uint fileOffset)
