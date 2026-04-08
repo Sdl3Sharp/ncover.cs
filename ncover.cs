@@ -1,8 +1,8 @@
 #:property Version=0.1.0
 #:property PublishTrimmed=false
 #:package NuGet.Protocol@7.3.0
-#:package System.CommandLine@2.0.1
-#:package System.Reflection.MetadataLoadContext@10.0.1
+#:package System.CommandLine@2.0.5
+#:package System.Reflection.MetadataLoadContext@10.0.5
 
 using System.Buffers;
 using System.Buffers.Binary;
