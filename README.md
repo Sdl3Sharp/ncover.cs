@@ -69,7 +69,7 @@ Alternatively, you can use the `--package` option to automatically resolve and d
 ### Input options
 
 | Option | Short | Description |
-|---|---|---|
+| --- | --- | --- |
 | `FIRST-PE` | | Path to the first PE file. Either a native PE or a .NET assembly. |
 | `SECOND-PE` | | Path to the second PE file. Either a native PE or a .NET assembly. |
 | `--package` | `-p` | A NuGet package ID with an optional version range (e.g., `Sdl3Sharp@1.0.*-*`). Can be used instead of providing `FIRST-PE` and `SECOND-PE`. |
@@ -82,7 +82,7 @@ Alternatively, you can use the `--package` option to automatically resolve and d
 ### Filtering options
 
 | Option | Short | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--exclude-file` | `-x` | Path to a file containing symbol names to exclude (one per line). Lines support `#` comments. |
 | `--exclude` | `-X` | Symbol names to exclude. Can be specified multiple times. |
 | `--min-severity` | `-m` | Minimum severity level to include in the report. One of: `All`, `Slight`, `Warn`, `Error`, `None`. Default: `All`. |
@@ -90,14 +90,14 @@ Alternatively, you can use the `--package` option to automatically resolve and d
 ### Severity options
 
 | Option | Short | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--warn-as-error` | `-e` | Treat warnings as errors. |
 | `--slight-as-warn` | `-w` | Treat slight issues as warnings. |
 
 ### Output options
 
 | Option | Short | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--verbosity` | `-v` | Verbosity level: `None`, `Default`, `Verbose`, or `Json`. Default: `Default`. |
 | `--json-output` | `-j` | Path to a file where the report will be additionally saved in JSON format. |
 | `--pretty` | | Pretty‑print JSON output (applies to `--json-output` and `--verbosity Json`). |
