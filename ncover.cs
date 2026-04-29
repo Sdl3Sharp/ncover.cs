@@ -17,7 +17,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Xml.Linq;
 using NuGet.Common;
 using NuGet.Packaging.Core;
 using NuGet.Protocol;
